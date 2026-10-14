@@ -1,0 +1,10 @@
+{
+  "name": "MechEng Omni-Bot",
+  "description": "A multimodal AI engine for Mechanical Engineering students supporting text, audio, image, and video analysis with multilingual support.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}

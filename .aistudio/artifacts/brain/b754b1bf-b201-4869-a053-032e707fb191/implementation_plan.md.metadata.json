@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan for dynamic API-aware model filtering:\n- Eliminates hardcoded models requiring unprovided API keys.\n- Shows only zero-key working models by default (Built-in Gemini Flash for text, Nano Banana Free for images).\n- Dynamically classifies user-added API models based on detected capabilities (text, images, or multimodal) and routes them into the appropriate mode selector(s).",
+  "updatedAt": "2026-10-14T00:32:20.220972514Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
