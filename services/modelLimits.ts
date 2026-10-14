@@ -19,7 +19,7 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
 
   // 1. Google Gemini Models
   if (provider === 'gemini') {
-    if (m.includes('2.5-pro') || m.includes('3-pro') || m.includes('4-argon')) {
+    if (m.includes('pro-latest') || m.includes('3-pro') || m.includes('4-argon') || m.includes('2.5-pro')) {
       return {
         provider,
         modelId,
@@ -30,22 +30,24 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
         defaultTemp: 0.7,
       };
     }
-    if (m.includes('2.5-flash') || m.includes('3.8-flash')) {
+    // Gemini Flash Latest, 3.8 Flash & other modern Gemini models support full 65,536 tokens
+    if (m.includes('flash') || m.includes('latest') || m.includes('3.8') || m.includes('2.5')) {
       return {
         provider,
         modelId,
         maxOutputTokens: 65536,
-        maxThinkingBudget: 24576,
+        maxThinkingBudget: 65536,
         supportsNativeThinking: true,
         thinkingEngine: 'gemini',
         defaultTemp: 0.7,
       };
     }
+
     return {
       provider,
       modelId,
-      maxOutputTokens: 8192,
-      maxThinkingBudget: 8192,
+      maxOutputTokens: 65536,
+      maxThinkingBudget: 65536,
       supportsNativeThinking: true,
       thinkingEngine: 'gemini',
       defaultTemp: 0.7,
@@ -79,7 +81,7 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
 
   // 3. OpenAI Models
   if (provider === 'openai') {
-    if (m.startsWith('o1') || m.startsWith('o3')) {
+    if (m.startsWith('o1') || m.startsWith('o3') || m.includes('o1-') || m.includes('o3-')) {
       return {
         provider,
         modelId,
@@ -104,8 +106,8 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
     return {
       provider,
       modelId,
-      maxOutputTokens: 4096,
-      maxThinkingBudget: 4096,
+      maxOutputTokens: 16384,
+      maxThinkingBudget: 16384,
       supportsNativeThinking: false,
       thinkingEngine: 'cot_instruction',
       defaultTemp: 0.7,
@@ -118,8 +120,8 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
       return {
         provider,
         modelId,
-        maxOutputTokens: 64000,
-        maxThinkingBudget: 32768,
+        maxOutputTokens: 65536,
+        maxThinkingBudget: 65536,
         supportsNativeThinking: true,
         thinkingEngine: 'deepseek_r1',
         defaultTemp: 0.6,
@@ -142,8 +144,8 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
       return {
         provider,
         modelId,
-        maxOutputTokens: 32768,
-        maxThinkingBudget: 32768,
+        maxOutputTokens: 65536,
+        maxThinkingBudget: 65536,
         supportsNativeThinking: true,
         thinkingEngine: 'deepseek_r1',
         defaultTemp: 0.6,
@@ -172,15 +174,16 @@ export function getModelCeilings(provider: AIProviderType | string, modelId: str
   }
 
   // 6. OpenRouter / Custom / Fallback
-  if (m.includes('r1') || m.includes('reasoner') || m.includes('o1') || m.includes('o3')) {
+  if (m.includes('r1') || m.includes('reasoner') || m.includes('o1') || m.includes('o3') || m.includes('flash') || m.includes('pro')) {
+    const isReasoning = m.includes('r1') || m.includes('reasoner') || m.includes('o1') || m.includes('o3');
     return {
       provider,
       modelId,
-      maxOutputTokens: 64000,
-      maxThinkingBudget: 32768,
-      supportsNativeThinking: true,
-      thinkingEngine: 'deepseek_r1',
-      defaultTemp: 0.6,
+      maxOutputTokens: 65536,
+      maxThinkingBudget: 65536,
+      supportsNativeThinking: isReasoning || m.includes('flash') || m.includes('pro'),
+      thinkingEngine: (m.includes('o1') || m.includes('o3')) ? 'openai_reasoning' : (m.includes('claude') ? 'claude_37' : (m.includes('r1') ? 'deepseek_r1' : 'gemini')),
+      defaultTemp: 0.7,
     };
   }
 

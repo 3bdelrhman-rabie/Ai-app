@@ -5,7 +5,9 @@ import {
   detectModelCapabilities, 
   CAPABILITY_METAS,
   getImageModelOptions,
-  ImageModelOption
+  ImageModelOption,
+  getModelInstanceInfo,
+  getModelTotalApiCount
 } from '../services/aiService';
 
 interface ModelSelectorBarProps {
@@ -69,6 +71,8 @@ export const ModelSelectorBar: React.FC<ModelSelectorBarProps> = ({
     keyLabel: string;
     provider: AIProviderType;
     modelId: string;
+    instanceTag: string;
+    displayName: string;
     isCurrent: boolean;
   }> = [];
 
@@ -97,11 +101,14 @@ export const ModelSelectorBar: React.FC<ModelSelectorBarProps> = ({
         const isKnownImageOnly = /(dall-?e|flux|stable-?diffusion|sdxl|imagen|recraft|banana)/i.test(m);
         
         if (supportsText && !isPureImageGen && !isKnownImageOnly) {
+          const instanceInfo = getModelInstanceInfo(k.id, m, keys);
           textOptions.push({
             keyId: k.id,
             keyLabel: k.label || meta.name,
             provider: k.provider,
             modelId: m,
+            instanceTag: instanceInfo.tag,
+            displayName: instanceInfo.tag ? `${m} ${instanceInfo.tag}` : m,
             isCurrent: k.id === activeSelection.keyId && m === activeSelection.modelId
           });
         }
@@ -126,7 +133,7 @@ export const ModelSelectorBar: React.FC<ModelSelectorBarProps> = ({
   const displayedLabel = isImageMode ? 'Image Engine:' : 'Active Model:';
   const displayedTitle = isImageMode
     ? (activeImageOption?.displayName || activeImageModel.displayName || 'Nano Banana (Free · No API Key)')
-    : (currentTextOpt ? currentTextOpt.modelId : (activeKey ? activeSelection.modelId : 'gemini-3.8-flash'));
+    : (currentTextOpt ? currentTextOpt.displayName : (activeKey ? getModelInstanceInfo(activeKey.id, activeSelection.modelId, keys).numberedTitle : 'gemini-3.8-flash'));
 
   const displayedSubLabel = isImageMode
     ? (currentMeta.name)
@@ -157,6 +164,20 @@ export const ModelSelectorBar: React.FC<ModelSelectorBarProps> = ({
             <span className="font-bold text-slate-100 truncate max-w-[150px] sm:max-w-[220px]">
               {displayedTitle}
             </span>
+
+            {(() => {
+              if (isImageMode) return null;
+              const totalModelApis = getModelTotalApiCount(activeSelection.modelId, keys);
+              if (totalModelApis > 1) {
+                return (
+                  <span className="px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-cyan-950/80 text-cyan-300 border border-cyan-500/30 hidden xs:flex items-center gap-1 shrink-0" title={`${totalModelApis} API keys configured for this model`}>
+                    <i className="fas fa-key text-[8px] text-cyan-400"></i>
+                    <span>{totalModelApis} APIs</span>
+                  </span>
+                );
+              }
+              return null;
+            })()}
 
             <span className="text-[10px] text-slate-400 border-l border-slate-700 pl-1.5 hidden xs:inline truncate">
               {displayedSubLabel}
@@ -301,7 +322,23 @@ export const ModelSelectorBar: React.FC<ModelSelectorBarProps> = ({
                             <i className={`fas ${meta.icon}`}></i>
                           </span>
                           <div className="truncate">
-                            <div className="font-semibold text-xs text-white truncate">{opt.modelId}</div>
+                            <div className="font-semibold text-xs text-white truncate flex items-center gap-1.5">
+                              <span>{opt.modelId}</span>
+                              {opt.instanceTag && (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
+                                  {opt.instanceTag}
+                                </span>
+                              )}
+                              {(() => {
+                                const totalModelApis = getModelTotalApiCount(opt.modelId, keys);
+                                return (
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 flex items-center gap-1">
+                                    <i className="fas fa-key text-[7px] text-cyan-400"></i>
+                                    <span>{totalModelApis} {totalModelApis === 1 ? 'API' : 'APIs'}</span>
+                                  </span>
+                                );
+                              })()}
+                            </div>
                             <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
                               <span className="truncate">{opt.keyLabel}</span>
                               <span>·</span>

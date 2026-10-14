@@ -49,6 +49,11 @@ export interface Attachment {
   name: string;
 }
 
+export interface SearchSource {
+  title: string;
+  uri: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -60,7 +65,15 @@ export interface ChatMessage {
   imageUrl?: string; // Legacy/Generated
   videoUrl?: string; // For Veo output
   mapLinks?: Array<{ title: string; uri: string }>;
+  searchSources?: SearchSource[];
+  searchQueries?: string[];
   isError?: boolean;
+  canSwitchApi?: boolean;
+  failedKeyId?: string;
+  failedProvider?: AIProviderType;
+  failedPrompt?: string;
+  failedAttachment?: Attachment;
+  failedMode?: AppMode;
   isGif?: boolean;
 }
 
@@ -153,7 +166,7 @@ export const REASONING_TIERS: Record<ReasoningEffortLevel, ReasoningTier> = {
     shortLabelAr: 'خفيف',
     speedTextAr: 'سريع ⚡⚡',
     qualityTextAr: 'مراجعة وتدقيق الإجابة',
-    descriptionAr: 'تفكير سريع بجهد محدود (2,048 توكن) لتدقيق الإجابات والتحقق من صحتها مع الحفاظ على سرعة الاستجابة.'
+    descriptionAr: 'تفكير سريع ديناميكي (~15% من طاقة الموديل) لتدقيق الإجابات والتحقق من صحتها مع الحفاظ على سرعة الاستجابة.'
   },
   medium: {
     level: 'medium',
@@ -173,7 +186,7 @@ export const REASONING_TIERS: Record<ReasoningEffortLevel, ReasoningTier> = {
     shortLabelAr: 'متوازن',
     speedTextAr: 'متوازن ⚖️',
     qualityTextAr: 'دقة عالية وتوازن مثالي',
-    descriptionAr: 'توازن مثالي بين السرعة والعمق (8,192 توكن) لمعالجة المهام المركبة وحل المسائل بتأنٍ ودقة.'
+    descriptionAr: 'توازن مثالي ديناميكي (~40% من طاقة الموديل حتى 26,000+ توكن) لمعالجة المهام المركبة وحل المسائل بتأنٍ ودقة.'
   },
   high: {
     level: 'high',
@@ -193,7 +206,7 @@ export const REASONING_TIERS: Record<ReasoningEffortLevel, ReasoningTier> = {
     shortLabelAr: 'عميق',
     speedTextAr: 'متأنٍ ومركّز 🧠',
     qualityTextAr: 'تحليل دقيق وحلول مفصلة',
-    descriptionAr: 'تحليل تفصيلي بجهد استنتاجي مرتفع (16,384 توكن) مع استنتاجات منطقية وخطوات تحقق معمقة.'
+    descriptionAr: 'تحليل تفصيلي بجهد استنتاجي مرتفع (~75% من طاقة الموديل حتى 49,000+ توكن) مع استنتاجات منطقية وخطوات تحقق معمقة.'
   },
   max: {
     level: 'max',
@@ -213,7 +226,7 @@ export const REASONING_TIERS: Record<ReasoningEffortLevel, ReasoningTier> = {
     shortLabelAr: 'أقصى',
     speedTextAr: 'دقيق ومتأنٍ جداً 🏆',
     qualityTextAr: 'أعلى دقة وتحليل شامل',
-    descriptionAr: 'أقصى قدرة تفكير واستنتاج للموديل لحل المعضلات الصعبة والتحليل الفائق.'
+    descriptionAr: 'أقصى قدرة تفكير واستنتاج للموديل (100% من السقف الكامل حتى 65,536+ توكن) لحل أصعب المعضلات الرياضية والبرمجية.'
   }
 };
 
@@ -274,3 +287,52 @@ export const RESPONSE_LENGTH_TIERS: Record<ResponseLengthLevel, ResponseLengthTi
 };
 
 export const RESPONSE_LENGTH_STEPS: ResponseLengthLevel[] = ['short', 'compact', 'standard', 'detailed', 'max'];
+
+// --- Dedicated Web Search Engine Configuration ---
+
+export interface SearchEngineKey {
+  id: string;
+  key: string;
+  label?: string;
+  addedAt: number;
+}
+
+export interface SearchEngineModelOption {
+  id: string;
+  name: string;
+  description: string;
+  recommended?: boolean;
+}
+
+export const SEARCH_ENGINE_MODELS: SearchEngineModelOption[] = [
+  { 
+    id: 'gemini-flash-latest', 
+    name: 'Gemini Flash (Latest)', 
+    description: 'Fastest real-time web crawler & auto-updating Gemini Flash (Recommended)', 
+    recommended: true 
+  },
+  { 
+    id: 'gemini-3.8-flash', 
+    name: 'Gemini 3.8 Flash', 
+    description: 'Frontier multimodal model for deep research & factual grounding' 
+  },
+  { 
+    id: 'gemini-pro-latest', 
+    name: 'Gemini Pro (Latest)', 
+    description: 'Deepest reasoning & exhaustive online factual synthesis' 
+  }
+];
+
+export interface SearchEngineConfig {
+  enabled: boolean;
+  modelId: string;
+  apiKeys: SearchEngineKey[];
+  activeKeyIndex: number;
+}
+
+export const DEFAULT_SEARCH_ENGINE_CONFIG: SearchEngineConfig = {
+  enabled: true,
+  modelId: 'gemini-flash-latest',
+  apiKeys: [],
+  activeKeyIndex: 0
+};

@@ -9,7 +9,11 @@ import {
   ImageGenConfig,
   ReasoningEffortLevel,
   REASONING_TIERS,
-  ResponseLengthLevel
+  ResponseLengthLevel,
+  SearchEngineConfig,
+  SearchEngineKey,
+  DEFAULT_SEARCH_ENGINE_CONFIG,
+  SEARCH_ENGINE_MODELS
 } from '../types';
 import * as GeminiService from './geminiService';
 import { calculateEngineParameters } from './modelLimits';
@@ -45,10 +49,12 @@ export function detectModelCapabilities(provider: AIProviderType, modelId: strin
   // Known dictionary with verified model capabilities
   const knownDict: Record<string, AICapability[]> = {
     // Google Gemini
+    'gemini-flash-latest': ['text', 'vision', 'audio', 'code', 'reasoning'],
+    'gemini-3.8-flash': ['text', 'vision', 'audio', 'code', 'reasoning'],
+    'gemini-pro-latest': ['text', 'vision', 'audio', 'code', 'reasoning'],
+    'gemini-4-argon': ['text', 'vision', 'code', 'reasoning'],
     'gemini-2.5-flash': ['text', 'vision', 'audio', 'code'],
     'gemini-2.5-pro': ['text', 'vision', 'audio', 'code', 'reasoning'],
-    'gemini-3.8-flash': ['text', 'vision', 'audio', 'code'],
-    'gemini-4-argon': ['text', 'vision', 'code', 'reasoning'],
     'gemini-2.0-flash-exp': ['text', 'vision', 'audio', 'live', 'code'],
     'gemini-3.1-flash-lite-image': ['image'],
     'imagen-3.0-generate-002': ['image'],
@@ -160,7 +166,7 @@ export const PROVIDER_METAS: Record<AIProviderType, ProviderMeta> = {
     type: 'gemini',
     name: 'Google Gemini',
     defaultBaseUrl: 'https://generativelanguage.googleapis.com',
-    defaultModels: ['gemini-3.8-flash', 'gemini-4-argon'],
+    defaultModels: ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-pro-latest'],
     keyPlaceholder: 'AIzaSy...',
     keyUrl: 'https://aistudio.google.com/app/apikey',
     icon: 'fa-brain',
@@ -269,6 +275,72 @@ export const PROVIDER_METAS: Record<AIProviderType, ProviderMeta> = {
   }
 };
 
+/**
+ * Computes the instance number and display tag for a model instance when duplicate model IDs exist across keys.
+ * If multiple keys share the same modelId, attaches `#1`, `#2`, etc.
+ */
+export function getModelInstanceInfo(
+  keyId: string,
+  modelId: string,
+  keys: AIKeyConfig[]
+): { instanceNumber: number; totalInstances: number; tag: string; numberedTitle: string } {
+  const cleanModel = (modelId || '').trim().toLowerCase();
+  const matching = (keys || []).filter(k => 
+    (k.selectedModel || '').trim().toLowerCase() === cleanModel
+  );
+  if (matching.length <= 1) {
+    return { 
+      instanceNumber: 1, 
+      totalInstances: matching.length, 
+      tag: '', 
+      numberedTitle: modelId 
+    };
+  }
+  const index = matching.findIndex(k => k.id === keyId);
+  const num = index >= 0 ? index + 1 : matching.length;
+  return {
+    instanceNumber: num,
+    totalInstances: matching.length,
+    tag: `#${num}`,
+    numberedTitle: `${modelId} #${num}`
+  };
+}
+
+/**
+ * Returns the total number of API keys configured for a specific model ID across the pool.
+ */
+export function getModelTotalApiCount(
+  modelId: string,
+  keys: AIKeyConfig[]
+): number {
+  const cleanModel = (modelId || '').trim().toLowerCase();
+  return (keys || []).filter(k => 
+    (k.selectedModel || '').trim().toLowerCase() === cleanModel
+  ).length;
+}
+
+/**
+ * Returns the count and list of active/connected API keys for a specific model ID.
+ */
+export function getModelConnectedApiCount(
+  modelId: string,
+  keys: AIKeyConfig[]
+): { count: number; activeKeys: AIKeyConfig[] } {
+  const cleanModel = (modelId || '').trim().toLowerCase();
+  const matching = (keys || []).filter(k => 
+    (k.selectedModel || '').trim().toLowerCase() === cleanModel &&
+    Boolean(
+      (k.apiKey && k.apiKey.trim().length > 0) || 
+      k.id === 'built-in-gemini' || 
+      (k.provider === 'custom' && k.baseUrl && k.baseUrl.trim().length > 0)
+    )
+  );
+  return {
+    count: matching.length,
+    activeKeys: matching
+  };
+}
+
 const STORAGE_KEY = 'mechengb_api_keys_v1';
 const ACTIVE_MODEL_STORAGE_KEY = 'mechengb_active_model_v1';
 
@@ -286,7 +358,7 @@ export const getStoredKeys = (): AIKeyConfig[] => {
         label: 'Google AI Studio (Default)',
         apiKey: envKey,
         baseUrl: PROVIDER_METAS.gemini.defaultBaseUrl,
-        selectedModel: 'gemini-3.8-flash',
+        selectedModel: 'gemini-flash-latest',
         availableModels: PROVIDER_METAS.gemini.defaultModels,
         isEnabled: true,
         status: envKey ? 'connected' : 'untested'
@@ -301,7 +373,7 @@ export const getStoredKeys = (): AIKeyConfig[] => {
           const isDeprecated = !k.selectedModel || k.selectedModel.includes('2.5') || k.selectedModel.includes('2.0') || k.selectedModel.includes('1.5');
           return {
             ...k,
-            selectedModel: isDeprecated ? 'gemini-3.8-flash' : k.selectedModel,
+            selectedModel: isDeprecated ? 'gemini-flash-latest' : k.selectedModel,
             availableModels: PROVIDER_METAS.gemini.defaultModels
           };
         }
@@ -330,8 +402,8 @@ export const getStoredActiveModel = (): ActiveModelSelection => {
     if (raw) {
       const parsed: ActiveModelSelection = JSON.parse(raw);
       if (parsed.provider === 'gemini' && (parsed.modelId.includes('2.5') || parsed.modelId.includes('2.0') || parsed.modelId.includes('1.5'))) {
-        parsed.modelId = 'gemini-3.8-flash';
-        parsed.displayName = 'Google Gemini (gemini-3.8-flash)';
+        parsed.modelId = 'gemini-flash-latest';
+        parsed.displayName = 'Google Gemini (gemini-flash-latest)';
         saveStoredActiveModel(parsed);
       }
 
@@ -357,8 +429,8 @@ export const getStoredActiveModel = (): ActiveModelSelection => {
   );
   if (firstAuth) {
     const fallbackModel = (firstAuth.provider === 'gemini' && (!firstAuth.selectedModel || firstAuth.selectedModel.includes('2.5') || firstAuth.selectedModel.includes('2.0') || firstAuth.selectedModel.includes('1.5')))
-      ? 'gemini-3.8-flash'
-      : (firstAuth.selectedModel || 'gemini-3.8-flash');
+      ? 'gemini-flash-latest'
+      : (firstAuth.selectedModel || 'gemini-flash-latest');
     return {
       keyId: firstAuth.id,
       provider: firstAuth.provider,
@@ -370,8 +442,8 @@ export const getStoredActiveModel = (): ActiveModelSelection => {
   return {
     keyId: 'built-in-gemini',
     provider: 'gemini',
-    modelId: 'gemini-3.8-flash',
-    displayName: 'Google Gemini (gemini-3.8-flash)'
+    modelId: 'gemini-flash-latest',
+    displayName: 'Google Gemini (gemini-flash-latest)'
   };
 };
 
@@ -382,6 +454,52 @@ export const saveStoredActiveModel = (selection: ActiveModelSelection) => {
     console.error("Failed to save active model:", e);
   }
 };
+
+const SEARCH_ENGINE_STORAGE_KEY = 'mechengb_search_engine_v1';
+
+export const getStoredSearchEngineConfig = (): SearchEngineConfig => {
+  try {
+    const raw = localStorage.getItem(SEARCH_ENGINE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      let targetModel = parsed.modelId || 'gemini-flash-latest';
+      if (targetModel.includes('2.5') || targetModel.includes('2.0') || targetModel.includes('1.5')) {
+        targetModel = 'gemini-flash-latest';
+      }
+      return {
+        enabled: parsed.enabled ?? true,
+        modelId: targetModel,
+        apiKeys: Array.isArray(parsed.apiKeys) ? parsed.apiKeys : [],
+        activeKeyIndex: typeof parsed.activeKeyIndex === 'number' ? parsed.activeKeyIndex : 0
+      };
+    }
+  } catch (e) {
+    console.error("Failed to read search engine config:", e);
+  }
+  return DEFAULT_SEARCH_ENGINE_CONFIG;
+};
+
+
+export const saveStoredSearchEngineConfig = (config: SearchEngineConfig) => {
+  try {
+    localStorage.setItem(SEARCH_ENGINE_STORAGE_KEY, JSON.stringify(config));
+  } catch (e) {
+    console.error("Failed to save search engine config:", e);
+  }
+};
+
+export function maskApiKey(key?: string): string {
+  if (!key) return 'None';
+  const trimmed = key.trim();
+  if (trimmed.length <= 8) return trimmed;
+  return `${trimmed.slice(0, 4)}••••${trimmed.slice(-4)}`;
+}
+
+export function getAllKeysForModel(modelId: string, keys: AIKeyConfig[]): AIKeyConfig[] {
+  const clean = (modelId || '').trim().toLowerCase();
+  return (keys || []).filter(k => (k.selectedModel || '').trim().toLowerCase() === clean && k.isEnabled);
+}
+
 
 // --- Connection Diagnostics & Testing ---
 
@@ -523,6 +641,283 @@ export const testConnection = async (
 
 // --- Universal Model Query Dispatcher ---
 
+export interface UniversalAIResponse {
+  text: string;
+  modelName: string;
+  provider: AIProviderType;
+  searchSources?: Array<{ title: string; uri: string }>;
+  searchQueries?: string[];
+  isQuotaExceeded?: boolean;
+  failedKeyId?: string;
+  failedProvider?: AIProviderType;
+}
+
+/**
+ * Strips any leaked model self-introductions, first-person declarations, time announcements,
+ * or conversational greetings from background search results.
+ * Guarantees that only objective 3rd-person factual intelligence reaches the selected model.
+ */
+export function sanitizeSearchDossier(rawText: string): string {
+  if (!rawText) return "";
+
+  let cleaned = rawText;
+
+  // 1. Remove Arabic self-identifications & developer declarations
+  // e.g. "أنا نموذج الذكاء الاصطناعي Gemini 2.5 Flash من تطوير Google DeepMind..."
+  // e.g. "بصفتي نموذج ذكاء اصطناعي تم تطويري بواسطة Google..."
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:أنا\s+(?:نموذج|موديل|ذكاء\s+اصطناعي|Gemini|جيميناي)[^\n.]+?(?:من\s+تطوير|بواسطة|Google|DeepMind)?[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:بصفتي\s+(?:نموذج|ذكاء\s+اصطناعي)[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:تم\s+تطويري\s+بواسطة\s+(?:Google|جوجل|DeepMind)[^\n.]*?[.!\n])/gi, '\n');
+
+  // 2. Remove Arabic local time / clock readings
+  // e.g. "الساعة الآن في مصر هي 10:01 مساءً."
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:الساعة\s+الآن\s+(?:في\s+)?[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:التوقيت\s+الحالي\s+(?:هو\s+|في\s+)?[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:الوقت\s+الحالي\s+(?:هو\s+|في\s+)?[^\n.]*?[.!\n])/gi, '\n');
+
+  // 3. Remove English self-identifications & developer declarations
+  // e.g. "I am Gemini, an AI model developed by Google..."
+  // e.g. "As an AI language model trained by Google..."
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:I\s+am\s+(?:Gemini|a\s+large\s+language\s+model|an\s+AI\s+model)[^\n.]*?(?:developed\s+by\s+Google|Google\s+DeepMind)?[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:As\s+(?:an?\s+AI(?:\s+model)?|Gemini|a\s+language\s+model)[^,\n]*?[,.]\s*)/gi, '\n');
+
+  // 4. Remove English local time / clock announcements
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:(?:The\s+)?current\s+time\s+(?:is|in)[^\n.]*?[.!\n])/gi, '\n');
+  cleaned = cleaned.replace(/(?:^|\n)\s*(?:(?:The\s+)?local\s+time\s+(?:is|in)[^\n.]*?[.!\n])/gi, '\n');
+
+  // 5. Remove conversational preambles/pleasantries at beginning
+  cleaned = cleaned.replace(/^\s*(?:مرحباً|أهلاً\s+بك|أهلاً\s+وسهلاً|بالتأكيد|إليك\s+المعلومات|Hello!|Hi there!|Sure!|Certainly!)[!،.,:\s]+/i, '');
+
+  return cleaned.trim();
+}
+
+/**
+ * Ensures the final output from non-Gemini models does not retain any rogue Gemini self-declarations
+ * that may have leaked past model generation.
+ */
+export function sanitizeModelOutput(text: string, provider: AIProviderType, modelId: string): string {
+  if (!text) return "";
+  if (provider === 'gemini') return text; // If user deliberately asked Gemini, keep original output
+
+  let sanitized = text;
+
+  // If a non-Gemini model (e.g. GPT-4o, Claude) begins its response claiming to be Gemini or Google:
+  // Strip the hallucinated self-introduction line
+  sanitized = sanitized.replace(/^\s*(?:أنا\s+نموذج\s+(?:الذكاء\s+الاصطناعي\s+)?(?:\*\*)?(?:Gemini|جيميناي)[^\n.]*?(?:Google|DeepMind)?[^\n.]*?[.!\n]+\s*)/i, '');
+  sanitized = sanitized.replace(/^\s*(?:I\s+am\s+(?:the\s+)?(?:\*\*)?Gemini[^\n.]*?(?:Google|DeepMind)?[^\n.]*?[.!\n]+\s*)/i, '');
+  // Strip leading clock readings if present at the very beginning of the response:
+  sanitized = sanitized.replace(/^\s*(?:الساعة\s+الآن\s+في\s+[^\n.]*?[.!\n]+\s*)/i, '');
+  sanitized = sanitized.replace(/^\s*(?:The\s+current\s+time\s+in\s+[^\n.]*?[.!\n]+\s*)/i, '');
+
+  return sanitized.trim();
+}
+
+/**
+ * Exhaustive Deep Web Research Agent powered by Google Search Grounding.
+ * Conducts real-time factual reconnaissance for non-Gemini models (Claude, OpenAI, Groq, DeepSeek, OpenRouter),
+ * ensuring the selected model has complete, verified online intelligence, statistics, and citations.
+ */
+export async function executeDeepWebResearch(
+  prompt: string,
+  searchUrls?: string[],
+  fallbackKey?: string,
+  searchConfig?: SearchEngineConfig,
+  additionalCandidateKeys?: string[]
+): Promise<{
+  researchDossier: string;
+  sources: Array<{ title: string; uri: string }>;
+  queries: string[];
+}> {
+  const sources: Array<{ title: string; uri: string }> = [];
+  let queries: string[] = [];
+  let researchDossier = "";
+
+  // 1. Gather all candidate API keys in prioritized order:
+  // - First: Keys from dedicated SearchEngineConfig (starting from activeKeyIndex)
+  // - Second: fallbackKey (from user's Gemini key in model keys)
+  // - Third: additionalCandidateKeys
+  // - Fourth: process.env.API_KEY or process.env.GEMINI_API_KEY
+  const candidateKeys: string[] = [];
+
+  if (searchConfig && Array.isArray(searchConfig.apiKeys) && searchConfig.apiKeys.length > 0) {
+    const activeIdx = Math.max(0, Math.min(searchConfig.activeKeyIndex || 0, searchConfig.apiKeys.length - 1));
+    const activeKey = searchConfig.apiKeys[activeIdx]?.key?.trim();
+    if (activeKey) candidateKeys.push(activeKey);
+
+    // Add remaining search keys
+    searchConfig.apiKeys.forEach((k, idx) => {
+      if (idx !== activeIdx && k.key?.trim()) {
+        candidateKeys.push(k.key.trim());
+      }
+    });
+  }
+
+  if (fallbackKey && fallbackKey.trim()) {
+    candidateKeys.push(fallbackKey.trim());
+  }
+
+  if (additionalCandidateKeys && Array.isArray(additionalCandidateKeys)) {
+    additionalCandidateKeys.forEach(k => {
+      if (k && k.trim() && !candidateKeys.includes(k.trim())) {
+        candidateKeys.push(k.trim());
+      }
+    });
+  }
+
+  const envKey = (typeof process !== 'undefined' ? (process.env.API_KEY || process.env.GEMINI_API_KEY) : '') || '';
+  if (envKey && !candidateKeys.includes(envKey)) {
+    candidateKeys.push(envKey);
+  }
+
+  // De-duplicate candidate keys while preserving order
+  const uniqueCandidateKeys = Array.from(new Set(candidateKeys)).filter(Boolean);
+
+  if (uniqueCandidateKeys.length === 0) {
+    console.warn("Deep Web Research agent: No Gemini API key available for Google grounding reconnaissance.");
+    return { 
+      researchDossier: "\n\n[NOTICE: Real-time web search requires an API key in API Settings > Search Engine. Proceeding with internal knowledge base.]\n", 
+      sources: [], 
+      queries: [] 
+    };
+  }
+
+  // Determine model to use for search reconnaissance
+  const preferredSearchModel = (searchConfig?.modelId?.trim() && !searchConfig.modelId.includes('2.5') && !searchConfig.modelId.includes('2.0') && !searchConfig.modelId.includes('1.5'))
+    ? searchConfig.modelId.trim()
+    : 'gemini-flash-latest';
+  const modelsToTry = [
+    preferredSearchModel,
+    'gemini-flash-latest',
+    'gemini-3.8-flash',
+    'gemini-pro-latest'
+  ];
+  const uniqueModelsToTry = Array.from(new Set(modelsToTry));
+
+  const targetFocus = searchUrls && searchUrls.length > 0
+    ? `\nPrioritize factual extraction from these specific sources: ${searchUrls.join(', ')}`
+    : '';
+
+  const now = new Date();
+  const temporalContext = `Current Real-World System Time: ${now.toUTCString()} (Local: ${now.toLocaleString()})`;
+
+  const researchPrompt = `<search_reconnaissance_directive>
+<objective>
+Execute an exhaustive, uncompressed Google Search reconnaissance to harvest 3rd-person factual intelligence, complete article content, official documentation, verified technical specs, benchmarks, and real-time data to answer:
+"${prompt}"
+</objective>
+
+<temporal_grounding>
+${temporalContext}
+Ensure that any questions regarding current events, release status, temporal milestones, or version availability are strictly anchored to this timeline.
+</temporal_grounding>
+${targetFocus ? `<priority_sources>\n${targetFocus}\n</priority_sources>` : ''}
+
+<exhaustive_harvesting_rules>
+1. FULL-CONTENT EXTRACTION: Do NOT summarize, compress, or shorten data. If relevant articles, documentation, benchmark tables, or news reports exist, synthesize and embed their full technical substance directly into this single dossier.
+2. ZERO INFORMATION LOSS: The receiving reasoning model will NOT have internet access; it relies 100% on this message as its total ground truth. Include all versions, metrics, changelogs, equations, and dates.
+3. STRICT 3RD-PERSON OBJECTIVITY: Do NOT speak in the first person ("I", "we", "أنا", "نحن"). Do NOT introduce yourself or announce what AI model you are.
+4. EXTERNAL COVERAGE OF AI MODELS: If the inquiry concerns AI models (such as Gemini, GPT-4o, Claude, DeepSeek), report on them strictly as third-party software products developed by their respective companies.
+5. NO FLUFF: Skip conversational hellos, small talk, or polite preambles. Start immediately with exhaustive factual intelligence, structured headers, detailed data points, and direct source URLs.
+</exhaustive_harvesting_rules>
+</search_reconnaissance_directive>`;
+
+  let lastError: any = null;
+
+  // Try candidate keys and models in order until one succeeds
+  for (const apiKey of uniqueCandidateKeys) {
+    for (const searchModel of uniqueModelsToTry) {
+      try {
+        const searchAi = new GoogleGenAI({ apiKey });
+
+        const searchGenConfig: any = {
+          tools: [{ googleSearch: {} }],
+          maxOutputTokens: 64000,
+          temperature: 0.2
+        };
+
+        // Enable deep thinking / reasoning tokens on models that support it
+        if (searchModel.includes('3.8') || searchModel.includes('pro') || searchModel.includes('thinking')) {
+          searchGenConfig.thinkingConfig = { thinkingBudget: 8192 };
+        }
+
+        let searchRes: any;
+        try {
+          searchRes = await searchAi.models.generateContent({
+            model: searchModel,
+            contents: researchPrompt,
+            config: searchGenConfig
+          });
+        } catch (configErr: any) {
+          // If thinkingConfig is rejected by this model version, retry without thinkingConfig
+          if (searchGenConfig.thinkingConfig) {
+            delete searchGenConfig.thinkingConfig;
+            searchRes = await searchAi.models.generateContent({
+              model: searchModel,
+              contents: researchPrompt,
+              config: searchGenConfig
+            });
+          } else {
+            throw configErr;
+          }
+        }
+
+        const chunks = searchRes.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        const seenUris = new Set<string>();
+
+        for (const chunk of chunks) {
+          if (chunk?.web?.uri && !seenUris.has(chunk.web.uri)) {
+            seenUris.add(chunk.web.uri);
+            sources.push({
+              title: chunk.web.title || chunk.web.uri,
+              uri: chunk.web.uri
+            });
+          }
+        }
+
+        queries = searchRes.candidates?.[0]?.groundingMetadata?.webSearchQueries || [];
+
+        // Also extract markdown links [title](url) and raw URLs if present in the text
+        if (searchRes.text) {
+          const urlRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+          let match;
+          while ((match = urlRegex.exec(searchRes.text)) !== null) {
+            const title = match[1].trim();
+            const uri = match[2].trim();
+            if (!seenUris.has(uri)) {
+              seenUris.add(uri);
+              sources.push({ title: title || uri, uri });
+            }
+          }
+
+          const sanitizedText = sanitizeSearchDossier(searchRes.text);
+
+          researchDossier = `\n\n[BACKGROUND VERIFIED WEB INTELLIGENCE - LIVE SEARCH DOSSIER]\n${sanitizedText}\n[END OF BACKGROUND INTELLIGENCE - Use the above objective live web facts to inform your response. Do not cite internal dossier tags. Speak with your own authentic voice and model persona.]\n`;
+          
+          // Successfully completed full reconnaissance with this model & key!
+          return { researchDossier, sources, queries };
+        }
+
+      } catch (searchErr: any) {
+        lastError = searchErr;
+        const msg = searchErr?.message || String(searchErr);
+        console.warn(`Search reconnaissance attempt with model ${searchModel} failed:`, msg);
+        // If 404, try next model with same key. If 429/quota/auth, try next key.
+        if (msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('key') || msg.includes('403') || msg.includes('unregistered')) {
+          break; // move to next key
+        }
+      }
+    }
+  }
+
+  console.warn("Deep web research reconnaissance could not complete with available keys:", lastError);
+  // Graceful degradation: never crash user query with "failed to call gemini api"
+  return { 
+    researchDossier: "\n\n[NOTICE: Real-time search engine was temporarily unreachable. Proceeding with full internal knowledge base.]\n", 
+    sources: [], 
+    queries: [] 
+  };
+}
+
 export const generateUniversalResponse = async (
   prompt: string,
   attachment: Attachment | null,
@@ -531,8 +926,16 @@ export const generateUniversalResponse = async (
   language: Language,
   responseLength: ResponseLengthLevel | boolean,
   deepThink: boolean | ReasoningEffortLevel,
-  mode: AppMode
-): Promise<{ text: string; modelName: string; provider: AIProviderType }> => {
+  mode: AppMode,
+  options?: {
+    enableWebSearch?: boolean;
+    searchUrls?: string[];
+    geminiFallbackKey?: string;
+    searchConfig?: SearchEngineConfig;
+    fallbackKeys?: string[];
+  }
+): Promise<UniversalAIResponse> => {
+
   const provider = config.provider;
   const key = config.apiKey?.trim();
   const baseUrl = config.baseUrl?.trim() || PROVIDER_METAS[provider].defaultBaseUrl;
@@ -557,7 +960,7 @@ export const generateUniversalResponse = async (
     effectivePrompt += `\n\n[RESPONSE REQUIREMENT: ${engineParams.lengthInstruction}]`;
   }
 
-  // 1. Google Gemini Provider
+  // 1. Google Gemini Provider (Native Grounding with Google Search)
   if (provider === 'gemini') {
     const geminiKey = key || process.env.API_KEY || process.env.GEMINI_API_KEY || '';
     if (!geminiKey) {
@@ -583,6 +986,10 @@ export const generateUniversalResponse = async (
         }
       }
     }
+
+    if (options?.enableWebSearch && options.searchUrls && options.searchUrls.length > 0) {
+      effectivePrompt += `\n\n[GOOGLE SEARCH DIRECTIVE: Search Google and ground your answer using real-time verified web information. Focus particularly on research or citations from: ${options.searchUrls.join(', ')}]`;
+    }
     parts.push({ text: effectivePrompt });
 
     const genConfig: any = {
@@ -594,10 +1001,16 @@ export const generateUniversalResponse = async (
       genConfig.thinkingConfig = { thinkingBudget: engineParams.thinkingBudget };
     }
 
-    let modelToUse = modelId;
-    if (!modelToUse || modelToUse.includes('2.5') || modelToUse.includes('2.0') || modelToUse.includes('1.5')) {
-      modelToUse = 'gemini-3.8-flash';
+    // Pass real Google Search Grounding tool when enabled
+    if (options?.enableWebSearch) {
+      genConfig.tools = [{ googleSearch: {} }];
     }
+
+    // Use user's selected Gemini model faithfully, migrating any legacy 2.x/1.5 models to gemini-flash-latest
+    const cleanRequested = (modelId && modelId.trim()) ? modelId.trim() : 'gemini-flash-latest';
+    const modelToUse = (cleanRequested.includes('2.5') || cleanRequested.includes('2.0') || cleanRequested.includes('1.5'))
+      ? 'gemini-flash-latest'
+      : cleanRequested;
 
     let response: any;
     try {
@@ -608,30 +1021,106 @@ export const generateUniversalResponse = async (
       });
     } catch (err: any) {
       const errMsg = err?.message || String(err);
-      if ((errMsg.includes('404') || errMsg.includes('NOT_FOUND') || err?.status === 404) && modelToUse !== 'gemini-3.8-flash') {
-        console.warn(`Gemini model ${modelToUse} returned 404, falling back to gemini-3.8-flash...`, err);
-        modelToUse = 'gemini-3.8-flash';
+      if ((errMsg.includes('404') || errMsg.includes('NOT_FOUND') || err?.status === 404) && modelToUse !== 'gemini-flash-latest') {
+        console.warn(`Gemini model ${modelToUse} returned 404, falling back to gemini-flash-latest...`, err);
         response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-flash-latest',
           contents: { parts },
           config: genConfig
         });
-      } else if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota')) {
+      } else if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('quota') || errMsg.includes('rate limit')) {
+
         return {
-          text: `⚠️ **Rate Limit Notice (429: Quota Exceeded)**\n\nThe free Gemini API request quota has temporarily been reached. Please wait a short moment before trying again, or configure your own Gemini API key in **API Keys Settings** (⚙️ top right) for dedicated unlimited quota.`,
+          text: `⚠️ **Rate Limit Notice (429: Quota Exceeded)**\n\nThe API key for [${config.label || 'Google Gemini'}] has reached its usage or rate limit. Click "Switch API & Retry" to instantly switch to another configured API key and continue without interruption.`,
           modelName: modelToUse,
-          provider: 'gemini'
+          provider: 'gemini',
+          isQuotaExceeded: true,
+          failedKeyId: config.id,
+          failedProvider: 'gemini'
         };
       } else {
         throw err;
       }
     }
 
+    // Extract search grounding metadata if present
+    const searchSources: Array<{ title: string; uri: string }> = [];
+    const seenUris = new Set<string>();
+    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    for (const chunk of chunks) {
+      if (chunk?.web?.uri && !seenUris.has(chunk.web.uri)) {
+        seenUris.add(chunk.web.uri);
+        searchSources.push({
+          title: chunk.web.title || chunk.web.uri,
+          uri: chunk.web.uri
+        });
+      }
+    }
+    const searchQueries: string[] = response.candidates?.[0]?.groundingMetadata?.webSearchQueries || [];
+
+    // Scan response text for markdown citation links [title](url) to capture direct links
+    if (response.text) {
+      const urlRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+      let match;
+      while ((match = urlRegex.exec(response.text)) !== null) {
+        const linkTitle = match[1].trim();
+        const linkUrl = match[2].trim();
+        if (!seenUris.has(linkUrl)) {
+          seenUris.add(linkUrl);
+          searchSources.push({
+            title: linkTitle || linkUrl,
+            uri: linkUrl
+          });
+        }
+      }
+    }
+
     return {
       text: response.text || "No response received.",
       modelName: modelToUse,
-      provider: 'gemini'
+      provider: 'gemini',
+      searchSources: searchSources.length > 0 ? searchSources : undefined,
+      searchQueries: searchQueries.length > 0 ? searchQueries : undefined
     };
+  }
+
+  // Common Deep Search Grounding for non-Gemini providers (Claude, OpenAI, Groq, DeepSeek, OpenRouter, Custom)
+  let searchContext = "";
+  let externalSources: Array<{ title: string; uri: string }> = [];
+  let externalQueries: string[] = [];
+
+  if (options?.enableWebSearch) {
+    const research = await executeDeepWebResearch(
+      prompt,
+      options.searchUrls,
+      options.geminiFallbackKey,
+      options.searchConfig,
+      options.fallbackKeys
+    );
+    searchContext = research.researchDossier;
+    externalSources = research.sources;
+    externalQueries = research.queries;
+  }
+
+  // Stage 2: Construct AI-optimized prompt delivering the uncompressed web intelligence dossier to the target model
+  let synthesizedPrompt = effectivePrompt;
+  if (searchContext && searchContext.trim()) {
+    synthesizedPrompt = `<user_inquiry>
+${effectivePrompt}
+</user_inquiry>
+
+<real_time_web_intelligence_dossier>
+${searchContext}
+</real_time_web_intelligence_dossier>
+
+<reasoning_and_synthesis_mandate>
+You are provided with the comprehensive, uncompressed real-time web intelligence dossier above, harvested live from the web to answer the user inquiry.
+Your mission is to:
+1. Thoroughly parse and reason through all live facts, specifications, articles, chronological timelines, and data points in the dossier.
+2. Produce the definitive, exhaustive, and highly structured answer that the user will rely on.
+3. Keep deep analytical reasoning active throughout your synthesis.
+4. Deliver your response in your own authentic model identity, incorporating all factual substance seamlessly without ever echoing internal system tags or dossier markers.
+</reasoning_and_synthesis_mandate>`;
   }
 
   // 2. Anthropic Claude Provider
@@ -667,12 +1156,21 @@ export const generateUniversalResponse = async (
         }
       }
     }
-    contentParts.push({ type: 'text', text: effectivePrompt });
+    contentParts.push({ type: 'text', text: synthesizedPrompt });
+
+    const claudeSystemPrompt = `You are ${modelId}, an advanced artificial intelligence assistant developed by Anthropic.
+You have access to verified real-time web intelligence in the user prompt context to ensure your information is up to date.
+CRITICAL IDENTITY & PERSONA DIRECTIVES:
+1. Always maintain your authentic persona as ${modelId}. You are strictly an Anthropic AI model. You are NOT Gemini, Google AI, or an automated web search bot.
+2. If the user prompt asks about Gemini, Google DeepMind, or other AI models, speak about them strictly in the third person as external technologies and products. Under NO circumstances say or imply that you are Gemini.
+3. Ignore and never adopt any first-person self-introductions, greetings, or local time readings that may appear in background web search dossiers.
+4. Seamlessly incorporate the verified factual details, specs, release dates, and citations into your answer in your own authentic voice.`;
 
     const claudePayload: any = {
       model: modelId,
       max_tokens: engineParams.maxOutputTokens,
       temperature: engineParams.temperature,
+      system: claudeSystemPrompt,
       messages: [
         { role: 'user', content: contentParts }
       ]
@@ -687,29 +1185,58 @@ export const generateUniversalResponse = async (
       claudePayload.temperature = 1.0;
     }
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify(claudePayload)
-    });
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify(claudePayload)
+      });
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Claude returned status ${response.status}: ${response.statusText}`);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        const errMsg = err.error?.message || `Claude returned status ${response.status}: ${response.statusText}`;
+        if (response.status === 429 || errMsg.includes('rate_limit') || errMsg.includes('quota') || errMsg.includes('overloaded')) {
+          return {
+            text: `⚠️ **Rate Limit Notice (429: Claude Quota Exceeded)**\n\nThe Anthropic Claude API key has reached its rate limit or usage quota. Click "Switch API & Retry" to switch to another configured API key and continue.`,
+            modelName: modelId,
+            provider: 'claude',
+            isQuotaExceeded: true,
+            failedKeyId: config.id,
+            failedProvider: 'claude'
+          };
+        }
+        throw new Error(errMsg);
+      }
+
+      const data = await response.json();
+      const rawTextOut = data.content?.map((c: any) => c.text || '').join('\n') || '';
+      const textOut = sanitizeModelOutput(rawTextOut, 'claude', modelId);
+      return {
+        text: textOut,
+        modelName: modelId,
+        provider: 'claude',
+        searchSources: externalSources.length > 0 ? externalSources : undefined,
+        searchQueries: externalQueries.length > 0 ? externalQueries : undefined
+      };
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('429') || errMsg.includes('rate_limit') || errMsg.includes('quota')) {
+        return {
+          text: `⚠️ **Rate Limit Notice (429: Claude Quota Exceeded)**\n\n${errMsg}`,
+          modelName: modelId,
+          provider: 'claude',
+          isQuotaExceeded: true,
+          failedKeyId: config.id,
+          failedProvider: 'claude'
+        };
+      }
+      throw err;
     }
-
-    const data = await response.json();
-    const textOut = data.content?.map((c: any) => c.text || '').join('\n') || '';
-    return {
-      text: textOut,
-      modelName: modelId,
-      provider: 'claude'
-    };
   }
 
   // 3. OpenAI & OpenAI-Compatible (Groq, DeepSeek, OpenRouter, Custom)
@@ -740,7 +1267,7 @@ export const generateUniversalResponse = async (
     userContent = [
       {
         type: 'text',
-        text: effectivePrompt
+        text: synthesizedPrompt
       },
       {
         type: 'image_url',
@@ -756,16 +1283,31 @@ export const generateUniversalResponse = async (
     } catch {
       attachedText = `[${attachment.name}]`;
     }
-    userContent = `${attachedText}\n\n${effectivePrompt}`;
-  } else if (attachment) {
-    userContent = `${effectivePrompt}`;
+    userContent = `${attachedText}\n\n${synthesizedPrompt}`;
   } else {
-    userContent = effectivePrompt;
+    userContent = synthesizedPrompt;
   }
 
-  const messages = [
-    { role: 'user', content: userContent }
-  ];
+  const providerMeta = PROVIDER_METAS[provider];
+  const providerName = providerMeta?.name || provider;
+  const openAISystemPrompt = `You are ${modelId}, an advanced artificial intelligence developed by ${providerName}.
+You have access to live real-time web intelligence provided in the prompt context to ground your answer with up-to-date facts.
+CRITICAL IDENTITY & PERSONA DIRECTIVES:
+1. Always maintain your authentic persona as ${modelId}. You are strictly an AI model developed by ${providerName}. You are NOT Gemini, Google AI, or an automated search bot.
+2. If the user prompt asks about Gemini, Google DeepMind, or other AI models, speak about them strictly in the third person as external technologies and products. Under NO circumstances claim that you are Gemini or developed by Google.
+3. Ignore and never adopt any first-person self-introductions, greetings, or local time announcements that might appear in background search dossiers.
+4. Seamlessly synthesize the verified facts, release dates, and technical details from the search intelligence into your response in your own authentic voice.`;
+
+  const messages: any[] = [];
+  if (modelId.startsWith('o1-mini') || modelId.startsWith('o1-preview')) {
+    userContent = `[SYSTEM PERSONA & RECONNAISSANCE DIRECTIVE: ${openAISystemPrompt}]\n\n${userContent}`;
+  } else if (modelId.startsWith('o1') || modelId.startsWith('o3')) {
+    messages.push({ role: 'developer', content: openAISystemPrompt });
+  } else {
+    messages.push({ role: 'system', content: openAISystemPrompt });
+  }
+
+  messages.push({ role: 'user', content: userContent });
 
   const bodyPayload: any = {
     model: modelId,
@@ -778,35 +1320,99 @@ export const generateUniversalResponse = async (
     if (engineParams.reasoningEffort) {
       bodyPayload.reasoning_effort = engineParams.reasoningEffort;
     }
-    // Some o1/o3 models require max_completion_tokens instead of max_tokens
     bodyPayload.max_completion_tokens = engineParams.maxOutputTokens;
   } else {
     bodyPayload.temperature = engineParams.temperature;
     bodyPayload.top_p = engineParams.topP;
   }
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(bodyPayload)
-  });
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(bodyPayload)
+    });
 
-  if (!response.ok) {
-    const errorJson = await response.json().catch(() => ({}));
-    const message = errorJson.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-    throw new Error(`${PROVIDER_METAS[provider]?.name || provider} Error: ${message}`);
+    if (!response.ok) {
+      const errorJson = await response.json().catch(() => ({}));
+      const message = errorJson.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+      if (response.status === 429 || message.toLowerCase().includes('quota') || message.toLowerCase().includes('rate limit') || message.toLowerCase().includes('resource_exhausted')) {
+        return {
+          text: `⚠️ **Rate Limit Notice (${PROVIDER_METAS[provider]?.name || provider}: Quota Exceeded)**\n\n${message}\n\nClick "Switch API & Retry" to instantly switch to another configured API key and continue.`,
+          modelName: modelId,
+          provider,
+          isQuotaExceeded: true,
+          failedKeyId: config.id,
+          failedProvider: provider
+        };
+      }
+      throw new Error(`${PROVIDER_METAS[provider]?.name || provider} Error: ${message}`);
+    }
+
+    const data = await response.json();
+    const choice = data.choices?.[0];
+    const rawOutputText = choice?.message?.content || choice?.text || "No response generated.";
+    const outputText = sanitizeModelOutput(rawOutputText, provider, modelId);
+
+    return {
+      text: outputText,
+      modelName: modelId,
+      provider,
+      searchSources: externalSources.length > 0 ? externalSources : undefined,
+      searchQueries: externalQueries.length > 0 ? externalQueries : undefined
+    };
+  } catch (fetchErr: any) {
+    const errText = fetchErr?.message || String(fetchErr);
+    if (errText.includes('429') || errText.toLowerCase().includes('quota') || errText.toLowerCase().includes('rate limit')) {
+      return {
+        text: `⚠️ **Rate Limit Notice (${PROVIDER_METAS[provider]?.name || provider}: Quota Exceeded)**\n\n${errText}`,
+        modelName: modelId,
+        provider,
+        isQuotaExceeded: true,
+        failedKeyId: config.id,
+        failedProvider: provider
+      };
+    }
+    throw fetchErr;
+  }
+};
+
+/**
+ * Finds the next available API key in the configured keys pool to failover when rate limits are hit.
+ */
+export function findNextAvailableKey(
+  failedKeyId: string, 
+  failedProvider: AIProviderType, 
+  keys: AIKeyConfig[]
+): AIKeyConfig | null {
+  const candidateKeys = (keys || []).filter(k => 
+    k.isEnabled && 
+    k.id !== failedKeyId && 
+    ((k.apiKey && k.apiKey.trim().length > 0) || k.provider === 'custom' || k.id === 'built-in-gemini')
+  );
+
+  if (candidateKeys.length === 0) return null;
+
+  // 1. Try finding another key for the EXACT SAME model
+  const failedKey = (keys || []).find(k => k.id === failedKeyId);
+  if (failedKey) {
+    const sameModelKeys = candidateKeys.filter(k => 
+      (k.selectedModel || '').trim().toLowerCase() === (failedKey.selectedModel || '').trim().toLowerCase()
+    );
+    if (sameModelKeys.length > 0) {
+      return sameModelKeys[0];
+    }
   }
 
-  const data = await response.json();
-  const choice = data.choices?.[0];
-  const outputText = choice?.message?.content || choice?.text || "No response generated.";
+  // 2. Try finding another key for the SAME PROVIDER
+  const sameProviderKeys = candidateKeys.filter(k => k.provider === failedProvider);
+  if (sameProviderKeys.length > 0) {
+    return sameProviderKeys[0];
+  }
 
-  return {
-    text: outputText,
-    modelName: modelId,
-    provider
-  };
-};
+  // 3. Fallback to any enabled alternative key
+  return candidateKeys[0];
+}
 
 // --- Image Model Options & Universal Dispatcher ---
 
@@ -844,13 +1450,19 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
   );
 
   authenticatedKeys.forEach(k => {
+    const sameProviderKeys = authenticatedKeys.filter(x => x.provider === k.provider);
+    const providerTag = sameProviderKeys.length > 1 
+      ? ` #${sameProviderKeys.findIndex(x => x.id === k.id) + 1}` 
+      : '';
+    const labelPrefix = `${k.label || PROVIDER_METAS[k.provider]?.name || k.provider}${providerTag}`;
+
     // If user provided a custom Gemini API Key:
     if (k.provider === 'gemini') {
       options.push({
         keyId: k.id,
         provider: 'gemini',
         modelId: 'gemini-3.1-flash-lite-image',
-        displayName: `${k.label || 'Google Gemini'} · Flash Lite Image (Fast)`,
+        displayName: `${labelPrefix} · Flash Lite Image (Fast)`,
         badge: 'Gemini Lite',
         supportsImages: true
       });
@@ -858,7 +1470,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'gemini',
         modelId: 'gemini-nano-banana-2.1',
-        displayName: `${k.label || 'Google Gemini'} · Nano Banana 2.1 (2K/4K Pro)`,
+        displayName: `${labelPrefix} · Nano Banana 2.1 (2K/4K Pro)`,
         badge: 'Nano Banana 2.1',
         supportsImages: true
       });
@@ -866,7 +1478,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'gemini',
         modelId: 'gemini-3-pro-image',
-        displayName: `${k.label || 'Google Gemini'} · Pro Image Studio (Ultra HD)`,
+        displayName: `${labelPrefix} · Pro Image Studio (Ultra HD)`,
         badge: 'Gemini Pro',
         supportsImages: true
       });
@@ -875,7 +1487,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'openai',
         modelId: 'dall-e-3',
-        displayName: `${k.label || 'OpenAI'} · DALL-E 3 (HD Quality)`,
+        displayName: `${labelPrefix} · DALL-E 3 (HD Quality)`,
         badge: 'DALL-E 3',
         supportsImages: true
       });
@@ -883,7 +1495,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'openai',
         modelId: 'dall-e-2',
-        displayName: `${k.label || 'OpenAI'} · DALL-E 2`,
+        displayName: `${labelPrefix} · DALL-E 2`,
         badge: 'DALL-E 2',
         supportsImages: true
       });
@@ -892,7 +1504,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'openrouter',
         modelId: 'black-forest-labs/flux-1-schnell',
-        displayName: `${k.label || 'OpenRouter'} · Flux.1 Schnell`,
+        displayName: `${labelPrefix} · Flux.1 Schnell`,
         badge: 'Flux.1',
         supportsImages: true
       });
@@ -900,7 +1512,7 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
         keyId: k.id,
         provider: 'openrouter',
         modelId: 'stabilityai/stable-diffusion-xl-base-1.0',
-        displayName: `${k.label || 'OpenRouter'} · SDXL Base 1.0`,
+        displayName: `${labelPrefix} · SDXL Base 1.0`,
         badge: 'SDXL',
         supportsImages: true
       });
@@ -910,12 +1522,11 @@ export const getImageModelOptions = (keys: AIKeyConfig[]): ImageModelOption[] =>
       models.forEach(m => {
         const caps = detectModelCapabilities(k.provider, m);
         if (caps.includes('image')) {
-          const meta = PROVIDER_METAS[k.provider] || PROVIDER_METAS.custom;
           options.push({
             keyId: k.id,
             provider: k.provider,
             modelId: m,
-            displayName: `${k.label || meta.name} · ${m}`,
+            displayName: `${labelPrefix} · ${m}`,
             badge: 'Image Gen',
             supportsImages: true
           });

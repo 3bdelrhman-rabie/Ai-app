@@ -27,7 +27,7 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
   responseLength,
   onChangeResponseLength,
   activeProvider = 'gemini',
-  activeModelId = 'gemini-2.5-flash',
+  activeModelId = 'gemini-flash-latest',
   className = ''
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -216,19 +216,22 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
             </div>
 
             {/* Dynamic Active Model Ceiling Badge */}
-            <div className="my-3 p-2.5 rounded-xl bg-slate-800/80 border border-slate-700/80 flex items-center justify-between text-[11px]">
+            <div className="my-3 p-2.5 rounded-xl bg-slate-800/80 border border-slate-700/80 flex items-center justify-between text-[11px] gap-2">
               <div className="flex items-center gap-2 truncate">
                 <i className="fas fa-microchip text-eng-accent"></i>
                 <div className="truncate">
-                  <div className="font-semibold text-white truncate max-w-[170px] sm:max-w-[210px]">{activeModelId}</div>
-                  <div className="text-[9px] text-slate-400 capitalize">
-                    {ceilings.supportsNativeThinking ? 'Native Thinking Engine' : 'Chain-of-Thought Reasoning'}
+                  <div className="font-semibold text-white truncate max-w-[160px] sm:max-w-[200px]">{activeModelId}</div>
+                  <div className="text-[9px] text-slate-400 flex items-center gap-1">
+                    <span>{ceilings.supportsNativeThinking ? 'Native Thinking Engine' : 'Chain-of-Thought Reasoning'}</span>
+                    <span>·</span>
+                    <span className="text-emerald-400 font-medium">Dynamic Token Scaling Active</span>
                   </div>
                 </div>
               </div>
-              <div className="text-right shrink-0">
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 text-emerald-400 border border-emerald-500/30">
-                  {ceilings.maxOutputTokens.toLocaleString()} Max Tokens
+              <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-black/40 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
+                  <i className="fas fa-gauge-high text-[9px]"></i>
+                  <span>{ceilings.maxOutputTokens.toLocaleString()} Max Tokens</span>
                 </span>
               </div>
             </div>
@@ -243,6 +246,11 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
                 <span className={`font-bold flex items-center gap-1 ${activeReasoningTier.colorClass}`}>
                   <span>{activeReasoningTier.label}</span>
                   <span className="text-[10px] text-slate-400">({activeReasoningTier.step}/4)</span>
+                  {currentLevel === 'max' && (
+                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                      {ceilings.maxThinkingBudget.toLocaleString()} Tokens
+                    </span>
+                  )}
                 </span>
               </div>
 
@@ -281,7 +289,7 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
               {/* Active Thinking Specs */}
               <div className="mt-2 pt-2 border-t border-slate-700/50 flex items-center justify-between text-[10px] text-slate-300">
                 <span className="text-slate-400">
-                  Thinking Budget: <span className="text-white font-mono">{engineParams.thinkingBudget > 0 ? `${engineParams.thinkingBudget.toLocaleString()} tokens` : '0 (Direct)'}</span>
+                  Thinking Budget: <span className="text-white font-mono font-semibold">{engineParams.thinkingBudget > 0 ? `${engineParams.thinkingBudget.toLocaleString()} / ${ceilings.maxThinkingBudget.toLocaleString()} tokens` : '0 (Direct)'}</span>
                 </span>
                 <span className="text-slate-400">
                   Speed: <span className="font-semibold text-slate-200">{activeReasoningTier.speedText}</span>
@@ -299,6 +307,11 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
                 <span className="font-bold text-cyan-300 flex items-center gap-1">
                   <span>{activeLengthTier.label}</span>
                   <span className="text-[10px] text-slate-400">({activeLengthTier.step}/4)</span>
+                  {responseLength === 'max' && (
+                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-bold">
+                      Full Ceiling
+                    </span>
+                  )}
                 </span>
               </div>
 
@@ -336,11 +349,11 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
 
               {/* Active Length Specs */}
               <div className="mt-2 pt-2 border-t border-slate-700/50 flex items-center justify-between text-[10px] text-slate-300">
-                <span className="text-slate-400 truncate max-w-[210px]">
+                <span className="text-slate-400 truncate max-w-[200px]">
                   {activeLengthTier.description}
                 </span>
-                <span className="text-cyan-400 font-mono text-[9px] shrink-0 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-500/30">
-                  ~{engineParams.maxOutputTokens.toLocaleString()} Tokens
+                <span className="text-cyan-400 font-mono text-[9px] shrink-0 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-500/30 font-semibold">
+                  ~{engineParams.maxOutputTokens.toLocaleString()} / {ceilings.maxOutputTokens.toLocaleString()} Tokens
                 </span>
               </div>
             </div>
@@ -374,7 +387,9 @@ const ReasoningControl: React.FC<ReasoningControlProps> = ({
                   <i className="fas fa-microchip text-[10px]"></i>
                   <span>Maximum Power</span>
                 </div>
-                <div className="text-[10px] text-slate-400 mt-0.5">Max Thinking + Comprehensive</div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  Max Thinking ({ceilings.maxThinkingBudget.toLocaleString()}) + Full Output
+                </div>
               </button>
             </div>
 

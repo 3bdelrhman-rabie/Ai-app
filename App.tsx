@@ -12,7 +12,9 @@ import {
   ReasoningEffortLevel,
   REASONING_TIERS,
   ResponseLengthLevel,
-  RESPONSE_LENGTH_TIERS
+  RESPONSE_LENGTH_TIERS,
+  SearchEngineConfig,
+  DEFAULT_SEARCH_ENGINE_CONFIG
 } from './types';
 import * as GeminiService from './services/geminiService';
 import * as AiService from './services/aiService';
@@ -20,6 +22,8 @@ import LiveSession from './components/LiveSession';
 import ApiSettingsModal from './components/ApiSettingsModal';
 import ModelSelectorBar from './components/ModelSelectorBar';
 import ReasoningControl from './components/ReasoningControl';
+import SearchUrlsModal from './components/SearchUrlsModal';
+import ActiveApiKeySwitcher from './components/ActiveApiKeySwitcher';
 
 // -- Icons Map --
 const MODE_ICONS = {
@@ -113,6 +117,66 @@ const App: React.FC = () => {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>(() => AiService.getStoredKeys());
   const [activeModel, setActiveModel] = useState<ActiveModelSelection>(() => AiService.getStoredActiveModel());
   const [isApiSettingsOpen, setIsApiSettingsOpen] = useState<boolean>(false);
+  const [settingsTab, setSettingsTab] = useState<'models' | 'search_engine'>('models');
+
+  // Dedicated Web Search Engine Configuration State
+  const [searchEngineConfig, setSearchEngineConfig] = useState<SearchEngineConfig>(() => AiService.getStoredSearchEngineConfig());
+
+  const handleOpenSettings = (tab: 'models' | 'search_engine' = 'models') => {
+    setSettingsTab(tab);
+    setIsApiSettingsOpen(true);
+  };
+
+  const handleSaveSearchEngineConfig = (newConfig: SearchEngineConfig) => {
+    setSearchEngineConfig(newConfig);
+    AiService.saveStoredSearchEngineConfig(newConfig);
+  };
+
+  const handleQuickSelectKey = (keyId: string) => {
+    const key = apiKeys.find(k => k.id === keyId);
+    if (!key) return;
+    handleSelectModel(key.id, key.selectedModel || activeModel.modelId);
+  };
+
+  // Google Web Search Grounding & Target Focus URLs State
+  const [isSearchGroundingEnabled, setIsSearchGroundingEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('mechengb_search_grounding_v1');
+      return saved === 'true';
+    } catch {}
+    return false;
+  });
+
+  const handleToggleSearchGrounding = () => {
+    setIsSearchGroundingEnabled(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('mechengb_search_grounding_v1', String(next));
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+  };
+
+  const [targetSearchUrls, setTargetSearchUrls] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('mechengb_search_urls_v1');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  const handleSaveSearchUrls = (urls: string[]) => {
+    setTargetSearchUrls(urls);
+    try {
+      localStorage.setItem('mechengb_search_urls_v1', JSON.stringify(urls));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const [isUrlModalOpen, setIsUrlModalOpen] = useState<boolean>(false);
 
   // Dedicated Active Image Model State for Media Generation
   const [activeImageModel, setActiveImageModel] = useState<{
@@ -170,20 +234,24 @@ const App: React.FC = () => {
     }
 
     const meta = AiService.PROVIDER_METAS[keyConfig.provider] || AiService.PROVIDER_METAS.custom;
+    const cleanModel = (keyConfig.provider === 'gemini' && (modelId.includes('2.5') || modelId.includes('2.0') || modelId.includes('1.5')))
+      ? 'gemini-flash-latest'
+      : modelId;
     const newSelection: ActiveModelSelection = {
       keyId,
       provider: keyConfig.provider,
-      modelId,
-      displayName: `${keyConfig.label || meta.name} (${modelId})`
+      modelId: cleanModel,
+      displayName: `${keyConfig.label || meta.name} (${cleanModel})`
     };
     setActiveModel(newSelection);
     AiService.saveStoredActiveModel(newSelection);
 
     // Also update selectedModel in the key
-    const updatedKeys = currentKeys.map(k => k.id === keyId ? { ...k, selectedModel: modelId } : k);
+    const updatedKeys = currentKeys.map(k => k.id === keyId ? { ...k, selectedModel: cleanModel } : k);
     setApiKeys(updatedKeys);
     AiService.saveStoredKeys(updatedKeys);
   };
+
 
   const handleSaveKeys = (updatedKeys: AIKeyConfig[]) => {
     setApiKeys(updatedKeys);
@@ -450,27 +518,7 @@ const App: React.FC = () => {
                 return;
             }
 
-            const result = await AiService.generateUniversalResponse(
-                currentText, 
-                currentAtt, 
-                activeModel,
-                currentConfig,
-                language, 
-                responseLength,
-                reasoningLevel,
-                AppMode.SOLVE
-            );
-            addBotMessage(
-              result.text, 
-              undefined, 
-              undefined, 
-              undefined, 
-              false, 
-              false, 
-              result.modelName, 
-              result.provider,
-              currentMode
-            );
+            await executeUniversalSolve(currentText, currentAtt, activeModel, currentConfig);
         } 
         else if (currentMode === AppMode.MAP) {
             // Get location first with robust error containment
@@ -560,6 +608,160 @@ const App: React.FC = () => {
     }
   };
 
+  const executeUniversalSolve = async (
+    promptText: string,
+    promptAtt: Attachment | null,
+    modelSelection: ActiveModelSelection,
+    keyConfig: AIKeyConfig
+  ) => {
+    setIsLoading(true);
+    try {
+      const geminiKey = apiKeys.find(k => k.provider === 'gemini' && k.isEnabled && k.apiKey?.trim())?.apiKey
+        || (typeof process !== 'undefined' ? (process.env.API_KEY || process.env.GEMINI_API_KEY) : '')
+        || '';
+      
+      const candidateFallbackKeys = apiKeys
+        .filter(k => k.provider === 'gemini' && k.isEnabled && k.apiKey?.trim())
+        .map(k => k.apiKey!.trim());
+
+      const result = await AiService.generateUniversalResponse(
+        promptText,
+        promptAtt,
+        modelSelection,
+        keyConfig,
+        language,
+        responseLength,
+        reasoningLevel,
+        AppMode.SOLVE,
+        {
+          enableWebSearch: isSearchGroundingEnabled,
+          searchUrls: targetSearchUrls,
+          geminiFallbackKey: geminiKey,
+          searchConfig: searchEngineConfig,
+          fallbackKeys: candidateFallbackKeys
+        }
+      );
+
+
+      if (result.isQuotaExceeded) {
+        addBotMessage(
+          result.text,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          false,
+          result.modelName,
+          result.provider,
+          AppMode.SOLVE,
+          {
+            canSwitchApi: true,
+            failedKeyId: keyConfig.id,
+            failedProvider: keyConfig.provider,
+            failedPrompt: promptText,
+            failedAttachment: promptAtt || undefined,
+            failedMode: AppMode.SOLVE
+          }
+        );
+      } else {
+        addBotMessage(
+          result.text,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          false,
+          result.modelName,
+          result.provider,
+          AppMode.SOLVE,
+          {
+            searchSources: result.searchSources,
+            searchQueries: result.searchQueries
+          }
+        );
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const isQuotaErr = errMsg.includes('429') || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate limit');
+      addBotMessage(
+        isQuotaErr
+          ? `⚠️ **تم تجاوز حد الاستخدام / نفاد الحصة (Rate Limit / Quota Exceeded)**\n\nالمفتاح الحالي [${keyConfig?.label || modelSelection.displayName}] استنفذ حصة الاستخدام مؤقتاً.\n\nاضغط على زر **"تبديل الـ API وإعادة المحاولة"** أدناه للانتقال للمفتاح التالي ومتابعة المحادثة فوراً دون انتظار.`
+          : `Processing Notice: ${errMsg}`,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        false,
+        modelSelection.displayName,
+        modelSelection.provider,
+        AppMode.SOLVE,
+        isQuotaErr ? {
+          canSwitchApi: true,
+          failedKeyId: keyConfig?.id,
+          failedProvider: keyConfig?.provider,
+          failedPrompt: promptText,
+          failedAttachment: promptAtt || undefined,
+          failedMode: AppMode.SOLVE
+        } : undefined
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSwitchApiAndRetry = async (msg: ChatMessage) => {
+    const failedKeyId = msg.failedKeyId || activeModel.keyId;
+    const failedProvider = msg.failedProvider || activeModel.provider;
+    
+    const nextKey = AiService.findNextAvailableKey(failedKeyId, failedProvider, apiKeys);
+    if (!nextKey) {
+      setIsApiSettingsOpen(true);
+      addBotMessage(
+        "لا توجد مفاتيح API احتياطية أخرى مسجلة حالياً لهذا الموديل. يمكنك إضافة مفتاح API احتياطي جديد بالضغط على \"+ مفتاح احتياطي\" في نافذة الإعدادات لتجاوز حد الاستخدام.",
+        undefined,
+        undefined,
+        undefined,
+        true
+      );
+      return;
+    }
+
+    const meta = AiService.PROVIDER_METAS[nextKey.provider] || AiService.PROVIDER_METAS.custom;
+    const instanceInfo = AiService.getModelInstanceInfo(nextKey.id, nextKey.selectedModel, apiKeys);
+    const newSelection: ActiveModelSelection = {
+      keyId: nextKey.id,
+      provider: nextKey.provider,
+      modelId: nextKey.selectedModel || meta.defaultModels[0],
+      displayName: `${nextKey.label || meta.name} (${nextKey.selectedModel || meta.defaultModels[0]})${instanceInfo.tag ? ` ${instanceInfo.tag}` : ''}`
+    };
+
+    setActiveModel(newSelection);
+    AiService.saveStoredActiveModel(newSelection);
+
+    addBotMessage(
+      `🔄 **تم التبديل بنجاح إلى المفتاح البديل:** \`${newSelection.displayName}\`\n\nجارٍ إعادة إرسال طلبك الآن تلقائياً...`,
+      undefined,
+      undefined,
+      undefined,
+      false,
+      false,
+      newSelection.modelId,
+      newSelection.provider,
+      msg.mode
+    );
+
+    if (msg.failedPrompt || msg.failedAttachment) {
+      setTimeout(() => {
+        executeUniversalSolve(
+          msg.failedPrompt || '',
+          msg.failedAttachment || null,
+          newSelection,
+          nextKey
+        );
+      }, 400);
+    }
+  };
+
   const addBotMessage = (
     text: string, 
     imageUrl?: string, 
@@ -569,7 +771,17 @@ const App: React.FC = () => {
     isGif?: boolean,
     modelName?: string,
     provider?: AIProviderType,
-    msgMode?: AppMode
+    msgMode?: AppMode,
+    meta?: {
+      searchSources?: Array<{ title: string; uri: string }>;
+      searchQueries?: string[];
+      canSwitchApi?: boolean;
+      failedKeyId?: string;
+      failedProvider?: AIProviderType;
+      failedPrompt?: string;
+      failedAttachment?: Attachment;
+      failedMode?: AppMode;
+    }
   ) => {
     setChatHistory(prev => [...prev, {
         id: Date.now().toString(),
@@ -582,7 +794,15 @@ const App: React.FC = () => {
         isError,
         isGif,
         modelName,
-        provider
+        provider,
+        searchSources: meta?.searchSources,
+        searchQueries: meta?.searchQueries,
+        canSwitchApi: meta?.canSwitchApi,
+        failedKeyId: meta?.failedKeyId,
+        failedProvider: meta?.failedProvider,
+        failedPrompt: meta?.failedPrompt,
+        failedAttachment: meta?.failedAttachment,
+        failedMode: meta?.failedMode
     }]);
   };
 
@@ -644,38 +864,85 @@ const App: React.FC = () => {
     </div>
   );
 
-  const renderHeader = () => (
-    <div className="h-16 border-b border-slate-700 bg-eng-dark/95 backdrop-blur flex items-center pl-3 pr-3 md:pl-4 md:pr-6 sticky top-0 z-30 gap-2 md:gap-4 overflow-x-auto no-scrollbar">
-      <h1 className="text-xl font-extrabold tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-eng-accent to-purple-500 drop-shadow-sm whitespace-nowrap shrink-0">
-        MECHENG
-      </h1>
-      
-      <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
-        {/* Unified Dual-Slider Reasoning & Response Length Control */}
-        <ReasoningControl
-          currentLevel={reasoningLevel}
-          onChangeLevel={handleReasoningLevelChange}
-          responseLength={responseLength}
-          onChangeResponseLength={handleResponseLengthChange}
-          activeProvider={activeModel.provider}
-          activeModelId={activeModel.modelId}
-        />
+  const renderHeader = () => {
+    const activeKeyConfig = apiKeys.find(k => k.id === activeModel.keyId && k.isEnabled) || apiKeys.find(k => k.isEnabled);
+    const providerMeta = activeKeyConfig ? (AiService.PROVIDER_METAS[activeKeyConfig.provider] || AiService.PROVIDER_METAS.custom) : AiService.PROVIDER_METAS.gemini;
 
-        {/* Add API / Keys Header Trigger */}
-        <button
-          onClick={() => setIsApiSettingsOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-eng-accent/50 text-slate-300 hover:text-white rounded-lg text-xs font-semibold shrink-0 transition-colors ml-auto"
-          title="Configure API keys and models"
-        >
-          <i className="fas fa-key text-eng-accent text-[11px]"></i>
-          <span className="hidden sm:inline">API Keys</span>
-          <span className="text-[10px] bg-slate-900 border border-slate-700 px-1.5 py-0.2 rounded-full text-eng-accent tabular-nums font-mono">
-            {apiKeys.length}
-          </span>
-        </button>
+    return (
+      <div className="h-16 border-b border-slate-700 bg-eng-dark/95 backdrop-blur flex items-center px-3 md:px-5 sticky top-0 z-30 gap-2 md:gap-4 justify-between">
+        {/* Left: Compact Logo Mark without app title text */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div 
+            className="w-9 h-9 rounded-xl bg-gradient-to-br from-eng-accent/25 to-purple-600/25 border border-eng-accent/30 flex items-center justify-center text-eng-accent shadow-xs"
+            title="AI Workspace"
+          >
+            <i className="fas fa-microchip text-base"></i>
+          </div>
+        </div>
+        
+        {/* Center: Centered Active Model Selector, API Badge & Search Status */}
+        <div className="flex items-center justify-center gap-2 flex-1 min-w-0 max-w-3xl">
+          {/* Active Model Indicator Tag */}
+          <div 
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800/90 border border-slate-700 text-xs shrink-0 max-w-[200px] sm:max-w-[280px] truncate cursor-default select-none shadow-xs" 
+            title={`Active AI Model: ${activeModel.modelId} (${providerMeta.name})`}
+          >
+            <span className={`w-4 h-4 rounded flex items-center justify-center text-[9px] shrink-0 ${providerMeta.badgeBg} ${providerMeta.badgeText} border ${providerMeta.badgeBorder}`}>
+              <i className={`fas ${providerMeta.icon}`}></i>
+            </span>
+            <span className="font-bold text-slate-100 truncate">
+              {activeModel.modelId}
+            </span>
+            {isSearchGroundingEnabled && (
+              <span className="hidden sm:inline px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-sky-950 text-sky-300 border border-sky-500/30 shrink-0" title="Web Search Grounding Enabled">
+                Web
+              </span>
+            )}
+          </div>
+
+          {/* Active API Key Indicator & Quick Switcher Button */}
+          <ActiveApiKeySwitcher
+            activeModel={activeModel}
+            keys={apiKeys}
+            onSelectKey={handleQuickSelectKey}
+            onOpenSettings={handleOpenSettings}
+          />
+
+          {/* Dedicated Search Engine Quick Status Chip in Header */}
+          {isSearchGroundingEnabled && (
+            <button
+              type="button"
+              onClick={() => handleOpenSettings('search_engine')}
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-sky-950/70 hover:bg-sky-950 border border-sky-500/40 hover:border-sky-400 text-sky-300 text-xs font-semibold transition-all shrink-0 shadow-xs"
+              title="محرك البحث المخصص نشط - انقر لتغيير الموديل أو المفاتيح"
+            >
+              <i className="fas fa-satellite-dish text-[10px] text-sky-400 animate-pulse"></i>
+              <span className="text-[11px] text-slate-300 font-normal">Search:</span>
+              <span className="font-mono text-[11px] font-bold text-sky-200">{searchEngineConfig.modelId}</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+            </button>
+          )}
+        </div>
+
+        {/* Right: Settings Trigger & Total Keys */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => handleOpenSettings('models')}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 hover:border-eng-accent/50 text-slate-300 hover:text-white rounded-xl text-xs font-semibold transition-colors shadow-xs"
+            title="Configure AI models, API keys, and search engine"
+          >
+            <i className="fas fa-sliders text-eng-accent text-xs"></i>
+            <span className="hidden sm:inline">Settings</span>
+            <span className="text-[10px] bg-slate-900 border border-slate-700 px-1.5 py-0.2 rounded-full text-eng-accent tabular-nums font-mono font-bold">
+              {apiKeys.length}
+            </span>
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
+
 
   const renderChatBubble = (msg: ChatMessage) => (
     <div key={msg.id} className={`flex w-full mb-6 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -687,7 +954,7 @@ const App: React.FC = () => {
             
             {/* Model Badge Header on Bot Messages */}
             {msg.role === 'model' && (msg.modelName || msg.provider) && (
-                <div className="flex items-center gap-2 mb-2 pb-2 border-b border-slate-700/60 text-xs">
+                <div className="flex flex-wrap items-center gap-2 mb-2 pb-2 border-b border-slate-700/60 text-xs">
                     <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
                     <span className="font-bold text-slate-300">
                         {msg.provider ? (AiService.PROVIDER_METAS[msg.provider]?.name || msg.provider) : 'AI'}
@@ -696,6 +963,15 @@ const App: React.FC = () => {
                     <span className="font-mono text-eng-accent text-[11px] bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
                         {msg.modelName}
                     </span>
+                    {msg.searchSources && msg.searchSources.length > 0 && (
+                        <span 
+                            className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-emerald-300 bg-emerald-950/80 border border-emerald-500/40 px-2 py-0.5 rounded-full shadow-xs tracking-wide"
+                            title="تم توثيق وتزويد الرد بأحدث المعلومات الحية من الويب عبر Google Search"
+                        >
+                            <i className="fas fa-check-circle text-[10px] text-emerald-400"></i>
+                            <span>Web Verified</span>
+                        </span>
+                    )}
                 </div>
             )}
 
@@ -762,6 +1038,58 @@ const App: React.FC = () => {
                     ))}
                 </div>
             )}
+
+            {/* Google Search Grounding Sources & Citations */}
+            {msg.searchSources && msg.searchSources.length > 0 && (
+                <div className="mt-3 pt-2.5 border-t border-slate-700/60">
+                    <div className="flex items-center gap-1.5 text-xs text-sky-400 font-semibold mb-2">
+                        <i className="fas fa-globe text-[11px] animate-pulse"></i>
+                        <span>مصادر وبحث Google المباشر ({msg.searchSources.length})</span>
+                        {msg.searchQueries && msg.searchQueries.length > 0 && (
+                            <span className="text-[10px] text-slate-400 font-normal ml-auto font-mono">
+                                استعلام: "{msg.searchQueries[0]}"
+                            </span>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                        {msg.searchSources.map((source, idx) => (
+                            <a
+                                key={idx}
+                                href={source.uri}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-sky-950/40 hover:bg-sky-900/60 text-sky-300 hover:text-white border border-sky-800/60 hover:border-sky-500 rounded-lg text-xs font-mono transition-all group max-w-full shadow-xs"
+                                title={source.uri}
+                            >
+                                <i className="fas fa-arrow-up-right-from-square text-[9px] text-sky-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform"></i>
+                                <span className="truncate max-w-[200px]">{source.title || source.uri}</span>
+                            </a>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Rate Limit / Quota Exceeded Failover Button */}
+            {msg.isError && msg.canSwitchApi && (
+                <div className="mt-3 pt-3 border-t border-red-500/20 flex flex-wrap items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={() => handleSwitchApiAndRetry(msg)}
+                        className="inline-flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-bold rounded-lg text-xs shadow-md shadow-orange-500/20 transition-all cursor-pointer transform active:scale-95"
+                    >
+                        <i className="fas fa-arrows-rotate text-[11px]"></i>
+                        <span>تبديل الـ API وإعادة المحاولة (Switch API & Retry)</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setIsApiSettingsOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs border border-slate-700 transition-colors"
+                    >
+                        <i className="fas fa-key text-[10px] text-amber-400"></i>
+                        <span>إدارة مفاتيح الـ API</span>
+                    </button>
+                </div>
+            )}
         </div>
     </div>
   );
@@ -794,6 +1122,109 @@ const App: React.FC = () => {
                 >
                     <i className="fas fa-times"></i>
                 </button>
+            </div>
+        )}
+
+        {/* Smart Toolbar beside input: Google Search Grounding Toggle & Reasoning Controls */}
+        {mode === AppMode.SOLVE && (
+            <div className="flex items-center justify-between gap-2 mb-2.5 px-0.5 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                    {/* Google Web Search Grounding Toggle */}
+                    <div className={`inline-flex items-center rounded-xl p-0.5 border transition-all ${
+                        isSearchGroundingEnabled 
+                            ? 'bg-sky-500/15 border-sky-500/50 shadow-sm shadow-sky-500/20' 
+                            : 'bg-slate-800/90 border-slate-700/80 text-slate-400'
+                    }`}>
+                        <button
+                            type="button"
+                            onClick={handleToggleSearchGrounding}
+                            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                                isSearchGroundingEnabled
+                                    ? 'bg-sky-500 text-slate-950 shadow-xs font-bold'
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-750'
+                            }`}
+                            title="تفعيل أو تعطيل البحث المباشر في Google والإنترنت"
+                        >
+                            <i className={`fas fa-globe text-[11px] ${isSearchGroundingEnabled ? 'animate-pulse' : ''}`}></i>
+                            <span>بحث Google</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                                isSearchGroundingEnabled ? 'bg-sky-900/50 text-slate-950 font-extrabold' : 'bg-slate-700/70 text-slate-400'
+                            }`}>
+                                {isSearchGroundingEnabled ? 'مفعّل' : 'إيقاف'}
+                            </span>
+                        </button>
+
+                        {/* Focus URLs button & Search Engine Model Tag */}
+                        {isSearchGroundingEnabled && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                                type="button"
+                                onClick={() => setIsUrlModalOpen(true)}
+                                className={`flex items-center gap-1 px-2 py-1 text-xs transition-colors rounded-lg ${
+                                    targetSearchUrls.length > 0 
+                                        ? 'bg-sky-500/30 text-sky-200 border border-sky-400/40 font-semibold' 
+                                        : 'text-sky-300 hover:text-white hover:bg-sky-500/20'
+                                }`}
+                                title="تحديد مواقع وروابط معينة للبحث والاعتماد عليها"
+                            >
+                                <i className="fas fa-link text-[10px]"></i>
+                                <span className="hidden sm:inline">
+                                    {targetSearchUrls.length > 0 ? `${targetSearchUrls.length} روابط مخصصة` : '+ روابط للبحث'}
+                                </span>
+                                {targetSearchUrls.length > 0 && (
+                                    <span className="w-4 h-4 rounded-full bg-sky-400 text-slate-950 text-[10px] font-bold flex items-center justify-center">
+                                        {targetSearchUrls.length}
+                                    </span>
+                                )}
+                            </button>
+
+                            {/* Search Engine Active Model Tag & Config Trigger */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenSettings('search_engine')}
+                              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-sky-950/60 hover:bg-sky-900/80 border border-sky-800/60 hover:border-sky-500 text-sky-300 text-xs transition-all cursor-pointer"
+                              title="موديول البحث المعتمد ومفاتيحه - انقر للتعديل"
+                            >
+                              <i className="fas fa-satellite-dish text-[10px] text-sky-400"></i>
+                              <span className="font-mono text-[11px] font-bold">{searchEngineConfig.modelId}</span>
+                              {searchEngineConfig.apiKeys.length > 0 && (
+                                <span className="text-[10px] bg-sky-900/70 px-1 py-0.2 rounded font-mono text-sky-300 border border-sky-700/50">
+                                  {searchEngineConfig.apiKeys.length} APIs
+                                </span>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                    </div>
+
+                    {/* Active URL preview chips */}
+                    {isSearchGroundingEnabled && targetSearchUrls.length > 0 && (
+                        <div className="hidden md:flex items-center gap-1 text-[11px] text-sky-300/90 bg-sky-950/50 border border-sky-800/60 px-2 py-0.5 rounded-lg">
+                            <i className="fas fa-filter text-[10px] text-sky-400"></i>
+                            <span className="truncate max-w-[130px] font-mono">{targetSearchUrls[0]}</span>
+                            {targetSearchUrls.length > 1 && <span className="text-[10px]">+{targetSearchUrls.length - 1}</span>}
+                            <button 
+                                onClick={() => handleSaveSearchUrls([])}
+                                className="text-slate-400 hover:text-red-400 ml-1 text-xs"
+                                title="إلغاء الروابط المحددة"
+                            >
+                                &times;
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                {/* Reasoning Control beside input */}
+                <div className="flex items-center gap-1.5 ml-auto">
+                    <ReasoningControl
+                        currentLevel={reasoningLevel}
+                        onChangeLevel={handleReasoningLevelChange}
+                        responseLength={responseLength}
+                        onChangeResponseLength={handleResponseLengthChange}
+                        activeProvider={activeModel.provider}
+                        activeModelId={activeModel.modelId}
+                    />
+                </div>
             </div>
         )}
 
@@ -1025,15 +1456,17 @@ const App: React.FC = () => {
                  </div>
                  {/* Floating dock & model selector */}
                  {renderFloatingModeDock()}
-                 <ModelSelectorBar
-                   keys={apiKeys}
-                   currentMode={mode}
-                   activeSelection={activeModel}
-                   activeImageModel={activeImageModel}
-                   onSelectModel={handleSelectModel}
-                   onSelectImageModel={handleSelectImageModel}
-                   onOpenSettings={() => setIsApiSettingsOpen(true)}
-                 />
+                 {mode !== AppMode.MAP && (
+                   <ModelSelectorBar
+                     keys={apiKeys}
+                     currentMode={mode}
+                     activeSelection={activeModel}
+                     activeImageModel={activeImageModel}
+                     onSelectModel={handleSelectModel}
+                     onSelectImageModel={handleSelectImageModel}
+                     onOpenSettings={() => setIsApiSettingsOpen(true)}
+                   />
+                 )}
                  {renderInputArea()}
              </div>
          ) : (
@@ -1056,7 +1489,18 @@ const App: React.FC = () => {
                         <div className="flex justify-start mb-6">
                             <div className="bg-eng-panel px-4 py-2 rounded-2xl rounded-bl-none text-slate-400 text-sm flex items-center gap-2">
                                 <i className="fas fa-circle-notch fa-spin text-eng-accent"></i> 
-                                {mode === AppMode.SOLVE ? (reasoningLevel !== 'off' ? `Deep reasoning in progress (${REASONING_TIERS[reasoningLevel].shortLabel})...` : 'Analyzing and responding...') : 'Processing...'}
+                                {mode === AppMode.SOLVE ? (
+                                  isSearchGroundingEnabled ? (
+                                    <span className="flex items-center gap-1.5 text-sky-300">
+                                      <i className="fas fa-globe text-xs animate-pulse text-sky-400"></i>
+                                      <span>جارٍ البحث المعمّق في الويب وصياغة الإجابة الموثقة...</span>
+                                    </span>
+                                  ) : (
+                                    reasoningLevel !== 'off' 
+                                      ? `Deep reasoning in progress (${REASONING_TIERS[reasoningLevel].shortLabel})...` 
+                                      : 'Analyzing and responding...'
+                                  )
+                                ) : 'Processing...'}
                             </div>
                         </div>
                     )}
@@ -1066,16 +1510,18 @@ const App: React.FC = () => {
                  {/* Compact Floating Mode Dock positioned above bottom input */}
                  {renderFloatingModeDock()}
 
-                 {/* Bottom Model Selector Bar docked immediately above input area */}
-                 <ModelSelectorBar
-                   keys={apiKeys}
-                   currentMode={mode}
-                   activeSelection={activeModel}
-                   activeImageModel={activeImageModel}
-                   onSelectModel={handleSelectModel}
-                   onSelectImageModel={handleSelectImageModel}
-                   onOpenSettings={() => setIsApiSettingsOpen(true)}
-                 />
+                 {/* Bottom Model Selector Bar docked immediately above input area (hidden in Map mode) */}
+                 {mode !== AppMode.MAP && (
+                   <ModelSelectorBar
+                     keys={apiKeys}
+                     currentMode={mode}
+                     activeSelection={activeModel}
+                     activeImageModel={activeImageModel}
+                     onSelectModel={handleSelectModel}
+                     onSelectImageModel={handleSelectImageModel}
+                     onOpenSettings={() => handleOpenSettings('models')}
+                   />
+                 )}
                  {renderInputArea()}
              </div>
          )
@@ -1090,6 +1536,18 @@ const App: React.FC = () => {
         onSaveKeys={handleSaveKeys}
         onSelectModel={handleSelectModel}
         currentKeyId={activeModel.keyId}
+        searchEngineConfig={searchEngineConfig}
+        onSaveSearchEngineConfig={handleSaveSearchEngineConfig}
+        initialTab={settingsTab}
+      />
+
+
+      {/* Target Focus URLs for Google Search Grounding Modal */}
+      <SearchUrlsModal
+        isOpen={isUrlModalOpen}
+        onClose={() => setIsUrlModalOpen(false)}
+        urls={targetSearchUrls}
+        onSaveUrls={handleSaveSearchUrls}
       />
     </div>
   );

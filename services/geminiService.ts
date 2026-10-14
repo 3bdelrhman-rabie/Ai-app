@@ -84,7 +84,7 @@ export const generateSolveResponse = async (
     ? responseLength
     : (responseLength ? 'short' : 'standard');
 
-  const modelId = (level === 'max' || level === 'high') ? 'gemini-4-argon' : 'gemini-3.8-flash';
+  const modelId = (level === 'max' || level === 'high') ? 'gemini-3.8-flash' : 'gemini-flash-latest';
   
   const parts: any[] = [];
   if (attachment) {
